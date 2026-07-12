@@ -1,0 +1,11 @@
+# Secrets
+.env
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Generated files
+chroma_db/
+graph.png
