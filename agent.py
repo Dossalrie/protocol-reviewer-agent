@@ -2,10 +2,12 @@ from dotenv import load_dotenv
 import os
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import Chroma
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import tool
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langchain_huggingface import HuggingFaceEmbeddings
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.types import interrupt, Command
 
 load_dotenv()
@@ -29,7 +31,9 @@ llm = ChatAnthropic(
 # TOOLS
 ###################################
 
+@tool
 def check_informed_consent(protocol: str) -> str:
+    """Check whether the protocol describes an acceptable consent procedure."""
     protocol = protocol.lower()
 
     if "verbal consent" in protocol:
@@ -40,7 +44,9 @@ def check_informed_consent(protocol: str) -> str:
 
     return "WARNING: Consent procedure not clearly described."
 
+@tool
 def check_sae_reporting(protocol: str) -> str:
+    """Check whether the protocol specifies an unsafe serious-adverse-event reporting timeline."""
     protocol = protocol.lower()
 
     if "30 days" in protocol:
@@ -48,7 +54,9 @@ def check_sae_reporting(protocol: str) -> str:
 
     return "PASS"
 
+@tool
 def check_eligibility(protocol: str) -> str:
+    """Check whether the protocol includes both inclusion and exclusion criteria."""
     protocol = protocol.lower()
 
     if "inclusion" not in protocol:
@@ -58,6 +66,14 @@ def check_eligibility(protocol: str) -> str:
         return "WARNING: Exclusion criteria missing."
 
     return "PASS"
+
+
+tools = [
+    check_informed_consent,
+    check_sae_reporting,
+    check_eligibility,
+]
+llm_with_tools = llm.bind_tools(tools)
 
 ###################################
 # GRAPH NODES
@@ -81,39 +97,21 @@ def retrieve(state: MessagesState):
         SystemMessage(content=f"Relevant ICH-GCP sections:\n\n{context}")
     ]}
 
-# Node 2: Use relevant tools
+# Node 2: let the model decide which LangChain tools to call
 def tool_check(state: MessagesState):
+    protocol = next(
+        msg.content
+        for msg in reversed(state["messages"])
+        if isinstance(msg, HumanMessage)
+    )
 
-    protocol = ""
-
-    for msg in state["messages"]:
-        if isinstance(msg, HumanMessage):
-            protocol = msg.content
-
-    consent = check_informed_consent(protocol)
-    sae = check_sae_reporting(protocol)
-    eligibility = check_eligibility(protocol)
-
-    report = f"""
-Structured tool results
-
-Consent:
-{consent}
-
-SAE:
-{sae}
-
-Eligibility:
-{eligibility}
-"""
-    print("=" * 60)
-    print(report)
-
-    return {
-        "messages": state["messages"] + [
-            SystemMessage(content=report)
-        ]
-    }
+    response = llm_with_tools.invoke([
+        SystemMessage(content="""You select compliance-checking tools for a clinical-trial
+protocol. Call every applicable tool. Pass the complete protocol text as the `protocol`
+argument to each selected tool. Do not provide a prose answer yet."""),
+        HumanMessage(content=protocol),
+    ])
+    return {"messages": [response]}
 
 
 # Node 3: generate compliance review using retrieved context
@@ -122,6 +120,7 @@ def review(state: MessagesState):
     context = ""
     human_message = ""
     system_messages = []
+    tool_results = []
 
     for msg in state["messages"]:
         if isinstance(msg, SystemMessage):
@@ -129,6 +128,9 @@ def review(state: MessagesState):
 
         if isinstance(msg, HumanMessage):
             human_message = msg.content
+
+        if isinstance(msg, ToolMessage):
+            tool_results.append(msg.content)
 
     context = "\n\n".join(system_messages)
 
@@ -146,6 +148,10 @@ Retrieved ICH-GCP sections:
 Protocol excerpt:
 
 {human_message}
+
+Deterministic tool results:
+
+{chr(10).join(tool_results) or "No tools were called."}
 
 Structure your response as:
 1. COMPLIANCE ISSUES FOUND
@@ -182,11 +188,17 @@ def human_review(state: MessagesState):
 graph = StateGraph(MessagesState)
 graph.add_node("retrieve", retrieve)
 graph.add_node("tool_check", tool_check)
+graph.add_node("tools", ToolNode(tools))
 graph.add_node("review", review)
 graph.add_node("human_review", human_review)
 graph.add_edge(START, "retrieve")
 graph.add_edge("retrieve", "tool_check")
-graph.add_edge("tool_check", "review")
+graph.add_conditional_edges(
+    "tool_check",
+    tools_condition,
+    {"tools": "tools", "__end__": "review"},
+)
+graph.add_edge("tools", "review")
 graph.add_edge("review", "human_review")
 graph.add_edge("human_review", END)
 memory = InMemorySaver()
