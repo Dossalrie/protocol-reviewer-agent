@@ -9,3 +9,6 @@ __pycache__/
 # Generated files
 chroma_db/
 graph.png
+
+# Source guideline: download locally from ICH (see README)
+ICH_E6(R3)_DraftGuideline_2023_0519.pdf

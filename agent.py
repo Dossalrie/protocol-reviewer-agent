@@ -130,7 +130,7 @@ def review(state: MessagesState):
             human_message = msg.content
 
         if isinstance(msg, ToolMessage):
-            tool_results.append(msg.content)
+            tool_results.append(f"{msg.name}: {msg.content}")
 
     context = "\n\n".join(system_messages)
 
@@ -157,6 +157,10 @@ Structure your response as:
 1. COMPLIANCE ISSUES FOUND
 2. RELEVANT ICH-GCP REFERENCES
 3. RECOMMENDATIONS
+4. TOOLS USED AND RESULTS
+
+Under "TOOLS USED AND RESULTS", list every tool that was run and its exact
+deterministic result. If no tools were run, state that explicitly.
 """
 
     response = llm.invoke([HumanMessage(content=prompt)])
