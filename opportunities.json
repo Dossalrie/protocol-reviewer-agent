@@ -1,0 +1,74 @@
+{
+  "opportunities": [
+    {
+      "name": "Electrochemical CO2 capture for cement plants",
+      "institution": "ETH Zurich",
+      "trl": "4",
+      "licensing_status": "Licensing available",
+      "market": "Cement and process heat",
+      "description": "Electrochemical capture technology that removes CO2 from industrial flue gas with lower energy intensity than incumbent amine systems.",
+      "impact_score": 9,
+      "market_score": 8,
+      "europe_score": 8,
+      "capital_score": 5,
+      "climate_impact": "High",
+      "notes": "Strong climate impact and Europe market pull, but pilot deployment requires industrial partnerships."
+    },
+    {
+      "name": "AI-driven thermal efficiency optimization for industrial furnaces",
+      "institution": "Fraunhofer Institute",
+      "trl": "5",
+      "licensing_status": "Early licensing",
+      "market": "Steel, glass, and chemicals",
+      "description": "Software and controls stack that optimizes combustion and heat transfer in industrial furnaces using physics-informed AI.",
+      "impact_score": 8,
+      "market_score": 9,
+      "europe_score": 9,
+      "capital_score": 8,
+      "climate_impact": "High",
+      "notes": "Excellent founder fit for Claudio and a very practical beachhead for a startup."
+    },
+    {
+      "name": "Electromagnetic induction heating for decarbonized chemical reactors",
+      "institution": "TUM",
+      "trl": "4",
+      "licensing_status": "Licensing available",
+      "market": "Chemicals and specialty manufacturing",
+      "description": "Inductive heating platform for reactors that could replace fossil-fired heating in industrial chemical processes.",
+      "impact_score": 8,
+      "market_score": 7,
+      "europe_score": 7,
+      "capital_score": 6,
+      "climate_impact": "High",
+      "notes": "Good fit for the original inductive heating theme and relevant to the founders' physics backgrounds."
+    },
+    {
+      "name": "Optical methane sensing for oil and gas and agriculture",
+      "institution": "Imperial College London",
+      "trl": "6",
+      "licensing_status": "Exclusive option",
+      "market": "Energy and agriculture",
+      "description": "Compact optical spectroscopy sensor for methane detection with strong monitoring and compliance use cases.",
+      "impact_score": 7,
+      "market_score": 8,
+      "europe_score": 8,
+      "capital_score": 7,
+      "climate_impact": "Medium",
+      "notes": "Strong match for Markus because of spectroscopy and hardware commercialization experience."
+    },
+    {
+      "name": "Solid-state battery recycling and materials recovery",
+      "institution": "Helmholtz Zentrum",
+      "trl": "3",
+      "licensing_status": "Available",
+      "market": "Battery supply chain",
+      "description": "Novel recycling process for recovering critical materials from battery waste with lower process intensity than incumbent approaches.",
+      "impact_score": 8,
+      "market_score": 7,
+      "europe_score": 8,
+      "capital_score": 4,
+      "climate_impact": "High",
+      "notes": "Potentially attractive but capital-intensive and likely better suited to a later-stage venture."
+    }
+  ]
+}

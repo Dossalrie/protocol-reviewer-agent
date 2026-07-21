@@ -1,5 +1,13 @@
-# Secrets
+# Secrets and local environment
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.token
+*.secret
 
 # Python
 venv/
@@ -7,8 +15,9 @@ __pycache__/
 *.pyc
 
 # Generated files
-chroma_db/
+opportunities.csv
+opportunities_seeded.json
 graph.png
 
-# Source guideline: download locally from ICH (see README)
-ICH_E6(R3)_DraftGuideline_2023_0519.pdf
+# Local data artifacts
+chroma_db/

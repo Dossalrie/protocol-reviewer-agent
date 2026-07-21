@@ -1,276 +1,233 @@
-from dotenv import load_dotenv
+from __future__ import annotations
+
+import csv
+import json
 import os
+from pathlib import Path
+from typing import Any
+
+from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
-from langchain_community.vectorstores import Chroma
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
-from langchain_core.tools import tool
-from langgraph.graph import StateGraph, MessagesState, START, END
-from langchain_huggingface import HuggingFaceEmbeddings
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.prebuilt import ToolNode, tools_condition
-from langgraph.types import interrupt, Command
+from langchain_core.messages import HumanMessage, SystemMessage
+from langgraph.graph import END, START, MessagesState, StateGraph
 
 load_dotenv()
 
-# Load the vector store
-embeddings = HuggingFaceEmbeddings(
-    model_name="BAAI/bge-base-en-v1.5"
-)
-vectorstore = Chroma(
-    persist_directory="./chroma_db",
-    embedding_function=embeddings
-)
+DATA_PATH = Path(__file__).with_name("opportunities.json")
+OUTPUT_PATH = Path(__file__).with_name("opportunities.csv")
 
-# The LLM
-llm = ChatAnthropic(
-    model="claude-haiku-4-5-20251001",
-    api_key=os.getenv("ANTHROPIC_API_KEY")
-)
-
-###################################
-# TOOLS
-###################################
-
-@tool
-def check_informed_consent(protocol: str) -> str:
-    """Check whether the protocol describes an acceptable consent procedure."""
-    protocol = protocol.lower()
-
-    if "verbal consent" in protocol:
-        return "FAIL: Protocol specifies verbal consent only."
-
-    if "written consent" in protocol:
-        return "PASS"
-
-    return "WARNING: Consent procedure not clearly described."
-
-@tool
-def check_sae_reporting(protocol: str) -> str:
-    """Check whether the protocol specifies an unsafe serious-adverse-event reporting timeline."""
-    protocol = protocol.lower()
-
-    if "30 days" in protocol:
-        return "FAIL: SAE reporting appears too slow."
-
-    return "PASS"
-
-@tool
-def check_eligibility(protocol: str) -> str:
-    """Check whether the protocol includes both inclusion and exclusion criteria."""
-    protocol = protocol.lower()
-
-    if "inclusion" not in protocol:
-        return "WARNING: Inclusion criteria missing."
-
-    if "exclusion" not in protocol:
-        return "WARNING: Exclusion criteria missing."
-
-    return "PASS"
-
-
-tools = [
-    check_informed_consent,
-    check_sae_reporting,
-    check_eligibility,
-]
-llm_with_tools = llm.bind_tools(tools)
-
-###################################
-# GRAPH NODES
-###################################
-
-# Node 1: retrieve relevant chunks from ICH-GCP
-def retrieve(state: MessagesState):
-    last_message = state["messages"][-1].content
-    docs = vectorstore.similarity_search_with_score(
-    last_message,
-    k=5
-    )
-
-    for doc, score in docs:
-        print("=" * 60)
-        print("Score:", score)
-        print(doc.page_content[:500])
-
-    context = "\n\n".join([doc.page_content for doc, score in docs])
-    return {"messages": state["messages"] + [
-        SystemMessage(content=f"Relevant ICH-GCP sections:\n\n{context}")
-    ]}
-
-# Node 2: let the model decide which LangChain tools to call
-def tool_check(state: MessagesState):
-    protocol = next(
-        msg.content
-        for msg in reversed(state["messages"])
-        if isinstance(msg, HumanMessage)
-    )
-
-    response = llm_with_tools.invoke([
-        SystemMessage(content="""You select compliance-checking tools for a clinical-trial
-protocol. Call every applicable tool. Pass the complete protocol text as the `protocol`
-argument to each selected tool. Do not provide a prose answer yet."""),
-        HumanMessage(content=protocol),
-    ])
-    return {"messages": [response]}
-
-
-# Node 3: generate compliance review using retrieved context
-def review(state: MessagesState):
-
-    context = ""
-    human_message = ""
-    system_messages = []
-    tool_results = []
-
-    for msg in state["messages"]:
-        if isinstance(msg, SystemMessage):
-            system_messages.append(msg.content)
-
-        if isinstance(msg, HumanMessage):
-            human_message = msg.content
-
-        if isinstance(msg, ToolMessage):
-            tool_results.append(f"{msg.name}: {msg.content}")
-
-    context = "\n\n".join(system_messages)
-
-    prompt = f"""You are a clinical trial protocol compliance reviewer.
-
-Use ONLY the retrieved ICH-GCP text below when identifying compliance issues.
-
-If the retrieved text does not contain enough information to support a conclusion,
-explicitly state that additional sections of the guideline are needed.
-
-Retrieved ICH-GCP sections:
-
-{context}
-
-Protocol excerpt:
-
-{human_message}
-
-Deterministic tool results:
-
-{chr(10).join(tool_results) or "No tools were called."}
-
-Structure your response as:
-1. COMPLIANCE ISSUES FOUND
-2. RELEVANT ICH-GCP REFERENCES
-3. RECOMMENDATIONS
-4. TOOLS USED AND RESULTS
-
-Under "TOOLS USED AND RESULTS", list every tool that was run and its exact
-deterministic result. If no tools were run, state that explicitly.
-"""
-
-    response = llm.invoke([HumanMessage(content=prompt)])
-
-    return {"messages": [response]}
-
-def human_review(state: MessagesState):
-    report = state["messages"][-1].content
-
-    decision = interrupt(
-        {
-            "draft_report": report,
-            "message": "Review the compliance report before continuing."
-        }
-    )
-
-    if decision.get("approved", False):
-        return state
-
-    return {
-        "messages": state["messages"] + [
-            HumanMessage(
-                content=f"Reviewer feedback: {decision['feedback']}"
-            )
-        ]
-    }
-
-# Build the graph
-graph = StateGraph(MessagesState)
-graph.add_node("retrieve", retrieve)
-graph.add_node("tool_check", tool_check)
-graph.add_node("tools", ToolNode(tools))
-graph.add_node("review", review)
-graph.add_node("human_review", human_review)
-graph.add_edge(START, "retrieve")
-graph.add_edge("retrieve", "tool_check")
-graph.add_conditional_edges(
-    "tool_check",
-    tools_condition,
-    {"tools": "tools", "__end__": "review"},
-)
-graph.add_edge("tools", "review")
-graph.add_edge("review", "human_review")
-graph.add_edge("human_review", END)
-memory = InMemorySaver()
-app = graph.compile(
-    checkpointer=memory
-)
-
-# Visualize the graph
-app.get_graph().draw_mermaid_png(output_file_path="graph.png")
-
-# Test with a sample protocol excerpt
-protocol_excerpt = """
-The investigator will obtain verbal consent from participants before enrollment.
-Adverse events will be collected at each visit but serious adverse events 
-will be reported to the sponsor within 30 days.
-"""
-
-print("Running compliance review...\n")
-
-config = {
-    "configurable": {
-        "thread_id": "trial_review_001"
-    }
+FOUNDER_PROFILE = {
+    "founders": ["Claudio", "Markus"],
+    "claudio": [
+        "physics",
+        "ai leadership",
+        "enterprise software",
+        "fundraising",
+        "strategy",
+        "management",
+    ],
+    "markus": [
+        "physics",
+        "spectroscopy",
+        "hardware",
+        "successful exit",
+        "deep-tech commercialization",
+    ],
 }
 
-# Run until the graph pauses
-result = app.invoke(
-    {
-        "messages": [
-            HumanMessage(
-                content=f"Review this protocol excerpt for ICH-GCP compliance:\n\n{protocol_excerpt}"
-            )
-        ]
-    },
-    config=config,
+llm = ChatAnthropic(
+    model="claude-haiku-4-5-20251001",
+    api_key=os.getenv("ANTHROPIC_API_KEY"),
 )
 
-# Show the draft report
-interrupt_data = result["__interrupt__"][0].value
 
-print("\n" + "=" * 70)
-print(interrupt_data["message"])
-print("=" * 70)
-print(interrupt_data["draft_report"])
+def call_llm(prompt: str) -> str:
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        return (
+            "Fallback venture memo: start with one orchestrator agent with a small set of specialized tools. "
+            "The best first opportunities are the ones with strong founder fit, clear European market pull, and realistic capital needs."
+        )
 
-# Simulate the human reviewer
-decision = input("\nApprove report? (y/n): ")
+    try:
+        response = llm.invoke([HumanMessage(content=prompt)])
+        return response.content
+    except Exception as exc:
+        return f"Fallback venture memo due to LLM error: {exc}"
 
-if decision.lower() == "y":
-    resume = app.invoke(
-        Command(resume={"approved": True}),
-        config=config,
+
+def load_opportunities(path: Path = DATA_PATH) -> list[dict[str, Any]]:
+    with path.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    return payload["opportunities"]
+
+
+def score_opportunity(opportunity: dict[str, Any]) -> dict[str, Any]:
+    description = f"{opportunity['description']} {opportunity['market']}".lower()
+    founder_keywords = " ".join(FOUNDER_PROFILE["claudio"] + FOUNDER_PROFILE["markus"]).lower()
+
+    claudio_score = 0
+    markus_score = 0
+
+    for keyword in FOUNDER_PROFILE["claudio"]:
+        if keyword.lower() in description:
+            claudio_score += 2
+
+    for keyword in FOUNDER_PROFILE["markus"]:
+        if keyword.lower() in description:
+            markus_score += 2
+
+    if any(term in description for term in ["sensor", "spectroscopy", "optical", "imaging", "diagnostic"]):
+        markus_score += 2
+
+    if any(term in description for term in ["ai", "optimization", "software", "digital", "control"]):
+        claudio_score += 2
+
+    if any(term in description for term in ["electro", "heat", "chem", "catal", "materials", "reactor"]):
+        claudio_score += 1
+        markus_score += 1
+
+    founder_fit = round(min(10, 4 + claudio_score + markus_score / 2), 1)
+    impact_score = round(min(10, opportunity.get("impact_score", 6)), 1)
+    market_score = round(min(10, opportunity.get("market_score", 6)), 1)
+    europe_score = round(min(10, opportunity.get("europe_score", 6)), 1)
+    capital_score = round(min(10, opportunity.get("capital_score", 6)), 1)
+
+    overall_score = round(
+        (founder_fit * 0.3) + (market_score * 0.25) + (impact_score * 0.2) + (europe_score * 0.15) + (capital_score * 0.1),
+        1,
     )
-else:
-    feedback = input("Enter reviewer comments: ")
 
-    resume = app.invoke(
-        Command(
-            resume={
-                "approved": False,
-                "feedback": feedback,
+    return {
+        "technology": opportunity["name"],
+        "institution": opportunity.get("institution", "Unknown"),
+        "trl": opportunity.get("trl", "Unknown"),
+        "licensing": opportunity.get("licensing_status", "Unknown"),
+        "market": opportunity.get("market", "Unknown"),
+        "founder_fit": founder_fit,
+        "climate_impact": opportunity.get("climate_impact", "Medium"),
+        "impact_score": impact_score,
+        "market_score": market_score,
+        "europe_score": europe_score,
+        "capital_score": capital_score,
+        "overall_score": overall_score,
+        "notes": opportunity.get("notes", "Needs further validation"),
+        "founder_keywords": founder_keywords,
+    }
+
+
+def discover_opportunities(state: MessagesState) -> dict[str, list[SystemMessage]]:
+    user_prompt = state["messages"][-1].content
+    opportunities = load_opportunities()
+    payload = {
+        "user_prompt": user_prompt,
+        "opportunities": opportunities,
+    }
+    return {
+        "messages": state["messages"] + [SystemMessage(content=json.dumps(payload, indent=2))],
+    }
+
+
+def score_opportunities(state: MessagesState) -> dict[str, list[SystemMessage]]:
+    payload = json.loads(state["messages"][-1].content)
+    opportunities = payload.get("opportunities", [])
+    scored = [score_opportunity(opportunity) for opportunity in opportunities]
+    scored.sort(key=lambda item: item["overall_score"], reverse=True)
+    return {
+        "messages": state["messages"] + [SystemMessage(content=json.dumps(scored, indent=2))],
+    }
+
+
+def draft_report(state: MessagesState) -> dict[str, list[HumanMessage]]:
+    scored = json.loads(state["messages"][-1].content)
+    prompt = f"""
+You are a deep-tech venture scout. The founders are Claudio and Markus.
+Review the scored opportunities below and produce a concise investment memo.
+
+Requirements:
+- Recommend whether to build one orchestrator agent or a multi-agent system first.
+- Start with one orchestrator agent with a few specialized tools rather than a fully autonomous multi-agent system.
+- For each opportunity, include a one-sentence why-it-matters and a one-sentence risk.
+- Highlight the top 3 opportunities for Europe.
+
+Scored opportunities:
+{json.dumps(scored, indent=2)}
+"""
+    report_text = call_llm(prompt)
+    return {"messages": state["messages"] + [HumanMessage(content=report_text)]}
+
+
+def export_csv(state: MessagesState) -> dict[str, list[SystemMessage]]:
+    scored = json.loads(state["messages"][-2].content)
+    output_rows = []
+    for item in scored:
+        output_rows.append(
+            {
+                "Technology": item["technology"],
+                "Institution": item["institution"],
+                "TRL": item["trl"],
+                "Licensing": item["licensing"],
+                "Market": item["market"],
+                "Founder Fit": item["founder_fit"],
+                "Climate Impact": item["climate_impact"],
+                "Impact Score": item["impact_score"],
+                "Market Score": item["market_score"],
+                "Europe Score": item["europe_score"],
+                "Capital Score": item["capital_score"],
+                "Overall Score": item["overall_score"],
+                "Notes": item["notes"],
             }
-        ),
-        config=config,
-    )
+        )
 
-print("\nGraph finished.")
+    with OUTPUT_PATH.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "Technology",
+                "Institution",
+                "TRL",
+                "Licensing",
+                "Market",
+                "Founder Fit",
+                "Climate Impact",
+                "Impact Score",
+                "Market Score",
+                "Europe Score",
+                "Capital Score",
+                "Overall Score",
+                "Notes",
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(output_rows)
 
-print("\nFinal report:")
-print("=" * 70)
-print(resume["messages"][-1].content)
+    return {
+        "messages": state["messages"] + [SystemMessage(content=f"Saved opportunities to {OUTPUT_PATH}")],
+    }
+
+
+def build_graph() -> Any:
+    graph = StateGraph(MessagesState)
+    graph.add_node("discover", discover_opportunities)
+    graph.add_node("score", score_opportunities)
+    graph.add_node("report", draft_report)
+    graph.add_node("export", export_csv)
+    graph.add_edge(START, "discover")
+    graph.add_edge("discover", "score")
+    graph.add_edge("score", "report")
+    graph.add_edge("report", "export")
+    graph.add_edge("export", END)
+    return graph.compile()
+
+
+if __name__ == "__main__":
+    app = build_graph()
+    prompt = """
+    Scout sustainability and decarbonization technologies in Europe that could become a startup opportunity for Claudio and Markus.
+    Prioritize opportunities that fit their physics and deep-tech backgrounds and could be commercialized in Europe.
+    """
+
+    result = app.invoke({"messages": [HumanMessage(content=prompt)]})
+    print("\n=== Venture scout report ===")
+    print(result["messages"][-1].content)
+    print(f"\nSaved ranked opportunities to {OUTPUT_PATH}")

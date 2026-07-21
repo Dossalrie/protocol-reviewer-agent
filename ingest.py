@@ -1,42 +1,26 @@
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
-import os
-from dotenv import load_dotenv
+from __future__ import annotations
 
-load_dotenv()
+import json
+from pathlib import Path
 
-# Load and split the PDF
-print("Loading PDF...")
-loader = PyPDFLoader("ICH_E6(R3)_DraftGuideline_2023_0519.pdf")
-pages = loader.load()
-print(f"Loaded {len(pages)} pages")
+DATA_PATH = Path(__file__).with_name("opportunities.json")
+OUTPUT_PATH = Path(__file__).with_name("opportunities_seeded.json")
 
-splitter = RecursiveCharacterTextSplitter(
-    chunk_size=1000,
-    chunk_overlap=200
-)
-chunks = splitter.split_documents(pages)
-print(f"Created {len(chunks)} chunks")
 
-# Store in Chroma
-print("Building vector store...")
-embeddings = HuggingFaceEmbeddings(
-    model_name="BAAI/bge-base-en-v1.5"
-)
-vectorstore = Chroma.from_documents(
-    chunks,
-    embeddings,
-    persist_directory="./chroma_db"
-)
-print("Done! Vector store saved to ./chroma_db")
+def load_and_validate() -> list[dict]:
+    with DATA_PATH.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
 
-# Test retrieval
-query = "What are the responsibilities of the sponsor?"
-results = vectorstore.similarity_search(query, k=3)
-print(f"\nTop 3 results for: '{query}'\n")
-for i, doc in enumerate(results):
-    print(f"--- Chunk {i+1} ---")
-    print(doc.page_content[:300])
-    print()
+    opportunities = payload.get("opportunities", [])
+    if not opportunities:
+        raise ValueError("No opportunities found in opportunities.json")
+
+    return opportunities
+
+
+if __name__ == "__main__":
+    opportunities = load_and_validate()
+    with OUTPUT_PATH.open("w", encoding="utf-8") as handle:
+        json.dump({"opportunities": opportunities}, handle, indent=2)
+    print(f"Loaded {len(opportunities)} opportunities from {DATA_PATH}")
+    print(f"Wrote validated seed file to {OUTPUT_PATH}")
